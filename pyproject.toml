@@ -1,0 +1,20 @@
+[project]
+name = "nw-scanner"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "python3-nmap",
+    "scapy",
+    "pydantic",
+    "pydantic_extra_types",
+    "pandas",
+    "PrettyTable",
+    "tabulate",
+    "tqdm",
+    "netifaces",
+    "Flask",
+    "Flask-Cors",
+    "requests"
+]
