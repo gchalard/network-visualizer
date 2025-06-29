@@ -2,9 +2,9 @@
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry]
+[project]
 name = "nw-scanner"
-version = { git = "v*.*.*" }
+dynamic = [ "version" ]
 description = "Network scanner and visualizer on steroids"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -27,10 +27,11 @@ dev-dependencies = [
     "pytest-cov"
 ]
 
-[tool.poetry.scripts]
-nw-scanner = "app.main:cli"
-
-[tool.poetry.packages]
+[tool.poetry]
+version = "1.0"
 packages = [
-    { include = "app" }
+    { include = "src/app" }
 ]
+
+[tool.poetry.scripts]
+nw-scanner = "src.main:cli"

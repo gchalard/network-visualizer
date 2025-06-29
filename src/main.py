@@ -4,27 +4,93 @@ import ipaddress
 import json
 import nmap3
 import netifaces
+import os
 from pathlib import Path
 import prettytable
 import requests
 from scapy.all import ARP, Ether, ICMP, IP, srp, sr1, RandShort
 from scapy.config import Conf
 import socket
+import shlex
+import subprocess
 import threading
 import time
 from tqdm import tqdm
 from typing import List, Optional
 import webbrowser
+import xml.etree.ElementTree as ET
 
 ### Custom imports for classes
-from classes import Device, Interface, Network
+from src.classes import Device, Interface, Network, Port, Vulnerability, CPE
 
 ### Custom imports for web application
-from app.API.app import create_app
+from src.app.API.app import create_app
 
 Conf.verb = 0
 
 FORMATS = ["table", "json", "web"]
+
+def nmap_vulners_script(nmap: nmap3.Nmap, target, vulners_script="--script vulners", args="-sV", timeout=None)->List[Vulnerability]:
+    """
+    Perform an Nmap scan using the vulners script.
+
+    :param target: Target IP or domain.
+    :param vulners_script: The vulners script to use.
+    :param args: Additional arguments for the Nmap command.
+    :param timeout: Timeout for the scan.
+    :return: Dictionary containing vulnerability information.
+    """
+    nmap.target = target
+    vulners_args = "{target} {default}".format(target=target, default=vulners_script)
+
+    if args:
+        vulners_args += " {0}".format(args)
+
+    vulners_command = nmap.default_command() + " " + vulners_args
+    vulners_shlex = shlex.split(vulners_command)
+
+    # Run the command and get the output
+    output = nmap.run_command(vulners_shlex, timeout=timeout)
+
+    # Parse the XML output
+    xml_root = ET.fromstring(output)
+
+    # Extract vulnerability information
+    vulnerabilities = []
+
+    # Iterate over each host
+    for host in xml_root.findall('host'):
+        # Iterate over each port
+        for port in host.findall('ports/port'):
+            # Find the script element with id 'vulners'
+            vulners_script = port.find("script[@id='vulners']")
+            if vulners_script:
+                
+                service = port.find('service')
+                
+                vuln = {
+                    'port': Port(number=int(port.get('portid')), protocol=port.get('protocol')),
+                    'service': service.get('name'),
+                    'product': service.get('product'),
+                    'version': service.get('version'),
+                    'cpes': []
+                }
+                
+                cpes = vulners_script.findall("table/table")
+                for cpe in cpes:
+                    data = {
+                        'id': cpe.find("elem[@key='id']").text,
+                        'cvss': cpe.find("elem[@key='cvss']").text,
+                        'type': cpe.find("elem[@key='type']").text,
+                    }
+                    data["ref"] = f"https://vulners.com/{data['type']}/{data['id']}"
+                    vuln['cpes'].append(CPE(**data))
+                
+                vuln = Vulnerability(**vuln)
+                vulnerabilities.append(vuln)
+                
+
+    return vulnerabilities
 
 def get_if_name(network: ipaddress.IPv4Network)->str|None:    
     
@@ -198,10 +264,18 @@ def format_web(topology: Network)->None:
     def run():
         app = create_app()
         app.run(host="0.0.0.0", port=5000, debug=False)
+        
+    def frontend():
+        frontend_dir = os.path.join(os.path.dirname(__file__), 'app', 'frontend')
+        subprocess.run(f"cd {frontend_dir} && npm install && npm start", shell=True)
     
     flask_thread = threading.Thread(target=run)
     flask_thread.daemon = True
     flask_thread.start()
+    
+    frontend_thread = threading.Thread(target=frontend)
+    frontend_thread.daemon = True
+    frontend_thread.start()
     
     max_retries = 30  # Maximum number of retries
     retry_delay = 1  # Delay between retries in seconds
@@ -254,6 +328,10 @@ def main(network: str, format: str, output: str = None)->None:
     
     parallel_icmp_scan(targets=devices, function=lambda x: x.set_hops(traceroute(x.ip)), description="Performing Traceroute")
     
+    parallel_icmp_scan(targets=devices, function=lambda d: d.get_ports(port_range=range(1, 1024)), description="Performing Port Scan")
+    
+    parallel_icmp_scan(targets=devices, function=lambda d: d.set_vulnerabilities(nmap_vulners_script(nmap=nmap,target=d.ip)), description="Performing Vulnerability Scan")
+    
     if format == "table":
         format_table(devices)
     
@@ -262,9 +340,8 @@ def main(network: str, format: str, output: str = None)->None:
         
     if format == "web":
         format_web(topology)
-
-if __name__ == "__main__":
-    
+        
+def cli():
     parser = argparse.ArgumentParser()
     parser.add_argument("--network", type=str, required=True, help="Network address in CIDR format")
     parser.add_argument("--format", type=str, choices=FORMATS, default="table", help="Output format")
@@ -277,3 +354,7 @@ if __name__ == "__main__":
         format=args.format,
         output=args.output
     )
+
+if __name__ == "__main__":
+    
+    cli()

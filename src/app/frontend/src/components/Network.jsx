@@ -28,7 +28,7 @@ const Network = () => {
           type: 'custom',
           data: { 
             label: device.hostname,
-            ...device,
+            device: device,
             type: router.ip === device.ip ? 'target' : 'source'
            },
           position: {

@@ -1,6 +1,6 @@
 from flask import Blueprint
 
-from app.API.app.controllers.network import NetworkController
+from src.app.API.app.controllers.network import NetworkController
 
 controller = NetworkController()
 

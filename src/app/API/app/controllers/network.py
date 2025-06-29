@@ -1,6 +1,15 @@
 from flask import request, jsonify
+from typing import List
 
-from classes import Network, Device
+from src.classes import Network, Device, Port
+
+def create_ports(ports: List[str])->List[Port]:
+    print(ports)
+    results: List[Port] = list()
+    for port_str in ports:
+        protocol, number = port_str.split('/')
+        results.append(Port(number=int(number), protocol=protocol))
+    return results
 
 class NetworkController:
     network: Network = None
@@ -12,7 +21,7 @@ class NetworkController:
         return jsonify(self.network.to_dict()), 200
     
     def create_network(self):
-        data = request.get_json()
+        data = request.get_json()        
         
         clients = [
             Device(
@@ -21,7 +30,7 @@ class NetworkController:
                 hostname=device.get("hostname", None),
                 os=device.get("os", None),
                 os_family=device.get("os_family", None),
-                ports=device.get("ports", None),
+                ports=create_ports(device.get("ports", list())),
                 hops=device.get("hops", None)
             )
             for device in data.get("clients", list())
@@ -33,7 +42,7 @@ class NetworkController:
             hostname=data.get("router", dict()).get("hostname", None),
             os=data.get("router", dict()).get("os", None),
             os_family=data.get("router", dict()).get("os_family", None),
-            ports=data.get("router", dict()).get("ports", None),
+            ports=create_ports(data.get("router", dict()).get("ports", list())),
             hops=data.get("router", dict()).get("hops", None)
         )
         
