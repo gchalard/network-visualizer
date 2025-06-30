@@ -30,7 +30,7 @@ dev-dependencies = [
 [tool.poetry]
 version = "1.0"
 packages = [
-    { include = "src/app" }
+    { include = "src" }
 ]
 
 [tool.poetry.scripts]
