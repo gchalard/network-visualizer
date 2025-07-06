@@ -28,6 +28,6 @@ jobs:
       - name: Build and push Docker image
         uses: docker/bake-action@v6
         with:
-          files:
-            - bake.hcl
+          files: | 
+            bake.hcl
           push: true
