@@ -2,6 +2,8 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import ipaddress
 import json
+import random
+from re import sub
 import nmap3
 import netifaces
 import os
@@ -40,57 +42,89 @@ def nmap_vulners_script(nmap: nmap3.Nmap, target, vulners_script="--script vulne
     :param timeout: Timeout for the scan.
     :return: Dictionary containing vulnerability information.
     """
-    nmap.target = target
-    vulners_args = "{target} {default}".format(target=target, default=vulners_script)
+    try:
+        nmap.target = target
+        vulners_args = "{target} {default}".format(target=target, default=vulners_script)
 
-    if args:
-        vulners_args += " {0}".format(args)
+        if args:
+            vulners_args += " {0}".format(args)
 
-    vulners_command = nmap.default_command() + " " + vulners_args
-    vulners_shlex = shlex.split(vulners_command)
+        vulners_command = nmap.default_command() + " " + vulners_args
+        vulners_shlex = shlex.split(vulners_command)
 
-    # Run the command and get the output
-    output = nmap.run_command(vulners_shlex, timeout=timeout)
+        # Run the command and get the output
+        output = nmap.run_command(vulners_shlex, timeout=timeout)
+        
+        if not output:
+            print(f"No output from nmap for {target}")
+            return []
 
-    # Parse the XML output
-    xml_root = ET.fromstring(output)
+        # Parse the XML output
+        xml_root = ET.fromstring(output)
 
-    # Extract vulnerability information
-    vulnerabilities = []
+        # Extract vulnerability information
+        vulnerabilities = []
 
-    # Iterate over each host
-    for host in xml_root.findall('host'):
-        # Iterate over each port
-        for port in host.findall('ports/port'):
-            # Find the script element with id 'vulners'
-            vulners_script = port.find("script[@id='vulners']")
-            if vulners_script:
-                
-                service = port.find('service')
-                
-                vuln = {
-                    'port': Port(number=int(port.get('portid')), protocol=port.get('protocol')),
-                    'service': service.get('name'),
-                    'product': service.get('product'),
-                    'version': service.get('version'),
-                    'cpes': []
-                }
-                
-                cpes = vulners_script.findall("table/table")
-                for cpe in cpes:
-                    data = {
-                        'id': cpe.find("elem[@key='id']").text,
-                        'cvss': cpe.find("elem[@key='cvss']").text,
-                        'type': cpe.find("elem[@key='type']").text,
+        # Iterate over each host
+        for host in xml_root.findall('host'):
+            # Iterate over each port
+            for port in host.findall('ports/port'):
+                # Find the script element with id 'vulners'
+                vulners_script = port.find("script[@id='vulners']")
+                if vulners_script:
+                    
+                    service = port.find('service')
+                    if service is None:
+                        continue
+                    
+                    portid = port.get('portid')
+                    protocol = port.get('protocol')
+                    if portid is None or protocol is None:
+                        continue
+                        
+                    vuln = {
+                        'port': Port(number=int(portid), protocol=protocol),
+                        'service': service.get('name', 'unknown'),
+                        'product': service.get('product', 'unknown'),
+                        'version': service.get('version', 'unknown'),
+                        'cpes': []
                     }
-                    data["ref"] = f"https://vulners.com/{data['type']}/{data['id']}"
-                    vuln['cpes'].append(CPE(**data))
-                
-                vuln = Vulnerability(**vuln)
-                vulnerabilities.append(vuln)
-                
+                    
+                    cpes = vulners_script.findall("table/table")
+                    for cpe in cpes:
+                        try:
+                            id_elem = cpe.find("elem[@key='id']")
+                            cvss_elem = cpe.find("elem[@key='cvss']")
+                            type_elem = cpe.find("elem[@key='type']")
+                            
+                            if id_elem is not None and cvss_elem is not None and type_elem is not None:
+                                id_text = id_elem.text
+                                cvss_text = cvss_elem.text
+                                type_text = type_elem.text
+                                
+                                if id_text is not None and cvss_text is not None and type_text is not None:
+                                    data = {
+                                        'id': id_text,
+                                        'cvss': cvss_text,
+                                        'type': type_text,
+                                    }
+                                    data["ref"] = f"https://vulners.com/{data['type']}/{data['id']}"
+                                    vuln['cpes'].append(CPE(**data))
+                        except Exception as e:
+                            print(f"Error parsing CPE for {target}: {e}")
+                            continue
+                    
+                    try:
+                        vuln = Vulnerability(**vuln)
+                        vulnerabilities.append(vuln)
+                    except Exception as e:
+                        print(f"Error creating Vulnerability object for {target}: {e}")
+                        continue
 
-    return vulnerabilities
+        return vulnerabilities
+    except Exception as e:
+        print(f"Error in nmap_vulners_script for {target}: {e}")
+        return []
 
 def get_if_name(network: ipaddress.IPv4Network)->str|None:    
     
@@ -241,6 +275,25 @@ def concatenate_devices(*lists: List[Device], )->List[Device]:
     
     return list(result)
 
+def scan_vulnerabilities(device, nmap):
+    """Scan vulnerabilities for a specific device
+    Args:
+        device (Device): Device to scan
+        nmap (nmap3.Nmap): Nmap instance
+    Returns:
+        Device: Updated device with vulnerabilities
+    """
+    try:
+        vulnerabilities = nmap_vulners_script(nmap=nmap, target=device.ip)
+        device.set_vulnerabilities(vulnerabilities)
+        if vulnerabilities:
+            print(f"Found {len(vulnerabilities)} vulnerabilities on {device.ip}")
+        return device
+    except Exception as e:
+        print(f"Error scanning vulnerabilities for {device.ip}: {e}")
+        device.set_vulnerabilities([])
+        return device
+
 def format_table(devices: List[Device])->None:
     result_table = prettytable.PrettyTable(["Hostname", "IP", "MAC", "OS", "OS Family", "Hops"])
     for device in devices:
@@ -266,38 +319,127 @@ def format_web(topology: Network)->None:
         app.run(host="0.0.0.0", port=5000, debug=False)
         
     def frontend():
-        frontend_dir = os.path.join(os.path.dirname(__file__), 'app', 'frontend')
-        subprocess.run(f"cd {frontend_dir} && npm install && npm start", shell=True)
+        # Generate a random port for the frontend container
+        frontend_port = random.randint(3001, 65535)
+        
+        # Stop any existing container with the same name
+        try:
+            subprocess.run(["docker", "stop", "nw-scanner-frontend"], 
+                         capture_output=True, check=False)
+            subprocess.run(["docker", "rm", "nw-scanner-frontend"], 
+                         capture_output=True, check=False)
+        except Exception as e:
+            print(f"Warning: Could not stop existing container: {e}")
+        
+        # Start the frontend container with the random port
+        try:
+            cmd = [
+                "docker", "run", "-d",
+                "--name", "nw-scanner-frontend",
+                "-p", f"{frontend_port}:3001",
+                "ghcr.io/gchalard/nw-scanner-front:latest"
+            ]
+            print(f"🚀 Starting frontend container on port {frontend_port}...")
+            result = subprocess.run(cmd, capture_output=True, text=True, check=True)
+            print(f"✅ Frontend container started: {result.stdout.strip()}")
+            return frontend_port
+        except subprocess.CalledProcessError as e:
+            print(f"❌ Failed to start frontend container: {e}")
+            print(f"Error output: {e.stderr}")
+            return None
     
     flask_thread = threading.Thread(target=run)
     flask_thread.daemon = True
     flask_thread.start()
     
-    frontend_thread = threading.Thread(target=frontend)
-    frontend_thread.daemon = True
-    frontend_thread.start()
+    # Start frontend container and get the port
+    frontend_port = frontend()
     
     max_retries = 30  # Maximum number of retries
     retry_delay = 1  # Delay between retries in seconds
+    flask_ready = False
+    frontend_ready = False
 
+    print("Starting web services...")
+    
+    # Wait for Flask API to be ready
     for attempt in range(max_retries):
         try:
             response = requests.get("http://127.0.0.1:5000/api/health")
             if response.ok:
-                print("Successfully connected to the server.")
-                break  # Exit the loop if the connection is successful
+                print("✅ Flask API is ready.")
+                flask_ready = True
+                break
         except requests.exceptions.RequestException as e:
-            print(f"Attempt {attempt + 1}: Failed to connect to the server. Retrying in {retry_delay} second(s)... Error: {e}")
-
+            print(f"Attempt {attempt + 1}: Waiting for Flask API... Error: {e}")
         time.sleep(retry_delay)
     
-    try:
-        response = requests.post("http://127.0.0.1:5000/api/network", json=topology.to_dict())
-        print("Server response:", response.status_code, response.text)
-    except requests.exceptions.RequestException as e:
-        print("Failed to connect to the server:", e)
+    # Wait for frontend to be ready
+    if frontend_port:
+        for attempt in range(max_retries):
+            try:
+                response = requests.get(f"http://127.0.0.1:{frontend_port}")
+                if response.ok:
+                    print(f"✅ Frontend is ready on port {frontend_port}.")
+                    frontend_ready = True
+                    break
+            except requests.exceptions.RequestException as e:
+                print(f"Attempt {attempt + 1}: Waiting for frontend on port {frontend_port}... Error: {e}")
+            time.sleep(retry_delay)
+    else:
+        print("❌ Frontend container failed to start")
     
-    flask_thread.join()
+    if flask_ready and frontend_ready:
+        try:
+            topology_dict = topology.to_dict()
+            print("📊 Sending topology to API:")
+            print(json.dumps(topology_dict, indent=4))
+            
+            # Check for vulnerabilities in the data
+            total_vulns = 0
+            for device in topology_dict.get("clients", []):
+                vulns = device.get("vulnerabilities", [])
+                if vulns:
+                    print(f"Device {device.get('ip')} has {len(vulns)} vulnerabilities")
+                    total_vulns += len(vulns)
+            
+            router_vulns = topology_dict.get("router", {}).get("vulnerabilities", [])
+            if router_vulns:
+                print(f"Router has {len(router_vulns)} vulnerabilities")
+                total_vulns += len(router_vulns)
+            
+            print(f"Total vulnerabilities found: {total_vulns}")
+            
+            response = requests.post("http://127.0.0.1:5000/api/network", json=topology_dict)
+            print("Server response:", response.status_code, response.text)
+            
+            # Open web browser
+            print("🌐 Opening web browser...")
+            webbrowser.open(f"http://localhost:{frontend_port}")
+            print("✅ Web application launched successfully!")
+            print("📱 You can now view the network topology in your browser.")
+            print(f"🔗 Frontend URL: http://localhost:{frontend_port}")
+            print("🔗 API URL: http://localhost:5000")
+            
+        except requests.exceptions.RequestException as e:
+            print("Failed to connect to the server:", e)
+    else:
+        print("❌ Failed to start web services. Please check the logs above.")
+    
+    # Keep the main thread alive
+    try:
+        flask_thread.join()
+    except KeyboardInterrupt:
+        print("\n🛑 Shutting down web services...")
+        # Clean up the frontend container
+        try:
+            subprocess.run(["docker", "stop", "nw-scanner-frontend"], 
+                         capture_output=True, check=False)
+            subprocess.run(["docker", "rm", "nw-scanner-frontend"], 
+                         capture_output=True, check=False)
+            print("🧹 Frontend container cleaned up")
+        except Exception as e:
+            print(f"Warning: Could not clean up frontend container: {e}")
         
     
 
@@ -318,11 +460,9 @@ def main(network: str, format: str, output: str = None)->None:
         icmp_devices
     )
   
-    gateway = get_gateway(interface=get_if_name(network))
-    router = get_router(devices, gateway)
-    topology = Network(clients=[device for device in devices if device != router], router=router, address=network)
-    print(json.dumps(topology.to_dict(), indent=4))
-    
+    interface_name = get_if_name(network)
+    gateway = get_gateway(interface=interface_name) if interface_name else None
+    router = get_router(devices, gateway) if gateway else None    
     
     parallel_icmp_scan(targets=devices, function=lambda x: x.get_os(nmap), description="Performing OS Detection")
     
@@ -330,7 +470,17 @@ def main(network: str, format: str, output: str = None)->None:
     
     parallel_icmp_scan(targets=devices, function=lambda d: d.get_ports(port_range=range(1, 1024)), description="Performing Port Scan")
     
-    parallel_icmp_scan(targets=devices, function=lambda d: d.set_vulnerabilities(nmap_vulners_script(nmap=nmap,target=d.ip)), description="Performing Vulnerability Scan")
+    # Perform vulnerability scanning
+    parallel_icmp_scan(targets=devices, function=lambda d: scan_vulnerabilities(d, nmap), description="Performing Vulnerability Scan")
+    
+    # Create a default router if none found
+    if router is None:
+        # Use the first device as router or create a placeholder
+        router = devices[0] if devices else Device(ip="192.168.1.1", hostname="Default Router")
+    
+    topology = Network(clients=[device for device in devices if device != router], router=router, address=network)
+    
+    # print(json.dumps(topology.to_dict(), indent=4))
     
     if format == "table":
         format_table(devices)

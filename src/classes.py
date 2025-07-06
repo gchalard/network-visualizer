@@ -74,7 +74,7 @@ class Device(BaseModel):
     os_family: Optional[str] = None
     ports: Optional[List[Port]] = None
     hops: Optional[List[str]] = None
-    vulnerabilies: Optional[List[Vulnerability]] = None
+    vulnerabilities: Optional[List[Vulnerability]] = None
     
     def get_ports(self, port_range: List[int]):
         open_ports: List[Port] = list()
@@ -115,7 +115,7 @@ class Device(BaseModel):
             self.os_family = os["osclass"].get("osfamily", None)
     
     def set_vulnerabilities(self, vulnerabilities: List[Vulnerability]):
-        self.vulnerabilies = vulnerabilities
+        self.vulnerabilities = vulnerabilities
     
     def to_dict(self)->Dict:
         
@@ -136,8 +136,8 @@ class Device(BaseModel):
         if self.ports:
             result["ports"] = [str(port) for port in self.ports]
             
-        if self.vulnerabilies:
-            result["vulnerabilities"] = [vulnerability.to_dict() for vulnerability in self.vulnerabilies]
+        if self.vulnerabilities:
+            result["vulnerabilities"] = [vulnerability.to_dict() for vulnerability in self.vulnerabilities]
         
         return result
     
